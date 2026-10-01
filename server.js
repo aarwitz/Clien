@@ -474,7 +474,13 @@ function normalizeAuditPayload(audit, targetUrl) {
       ? `Read-only audit of ${pages.length} page(s): nothing broken was observed. Nothing was clicked.`
       : `${findings.length} defect(s) observed on ${pages.length} page(s) without clicking anything (${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low).`,
     coverage: { screensExplored: pages.length, actionsPerformed: 0, screens },
-    complete: { actions: 0, screens: pages.length, readOnly: true, robotsBlocked: audit && audit.robotsBlocked ? audit.robotsBlocked : [] }
+    complete: {
+      actions: 0,
+      screens: pages.length,
+      elements: pages.reduce((total, page) => total + Number(page.controlsExamined || 0), 0),
+      readOnly: true,
+      robotsBlocked: audit && audit.robotsBlocked ? audit.robotsBlocked : []
+    }
   };
 }
 
@@ -1099,7 +1105,7 @@ function summarizeFindings(payload, context = {}) {
         .map(({ actionable, ...finding }) => finding)
     },
     pagesScanned: payload && payload.coverage && payload.coverage.screensExplored ? payload.coverage.screensExplored : 0,
-    elementsFound: payload && payload.complete && payload.complete.actions ? payload.complete.actions : 0,
+    elementsFound: payload && payload.complete && payload.complete.elements ? payload.complete.elements : 0,
     videoUrl: media.reportHtml,
     evidenceVideo: context.evidenceVideo || null,
     evidenceUrl,
