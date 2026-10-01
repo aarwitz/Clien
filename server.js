@@ -9,7 +9,12 @@ const PDFDocument = require('pdfkit');
 
 const app = express();
 const PORT = 3000;
-const TAPP_PACKAGE = '@aarwitz/tapp@0.17.12';
+const TAPP_PACKAGE = '@aarwitz/tapp@0.17.22';
+// Read-only: `tapp audit` renders and reads prospect pages but never clicks, types, submits or
+// hovers, so it is safe to point at a site we do not own. `explore` clicks and must never be
+// run against a third party. Pages per site and the pause between them keep the crawl polite.
+const TAPP_AUDIT_PAGES = Number(process.env.CLIEN_AUDIT_PAGES) || 6;
+const TAPP_AUDIT_DELAY_MS = Number(process.env.CLIEN_AUDIT_DELAY_MS) || 750;
 const TAPP_CAPTURE_ROOT = path.join(os.homedir(), '.tapp', 'captures');
 const reportsDir = path.join(__dirname, 'reports');
 const auditLogPath = path.join(__dirname, 'audit-log.json');
@@ -446,7 +451,34 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runTappExplore(targetUrl, onProgress = () => {}, signal) {
+// Shape the audit result like the exploration payload the rest of this file was written
+// against: one findings list, one screen per audited page, and the capture directory tapp wrote.
+function normalizeAuditPayload(audit, targetUrl) {
+  const pages = Array.isArray(audit && audit.pages) ? audit.pages : [];
+  const screens = pages.map((page) => {
+    try { return new URL(page.url).pathname + new URL(page.url).search; } catch (error) { return page.url; }
+  });
+  const findings = pages.flatMap((page) => Array.isArray(page.findings) ? page.findings : []);
+  const counts = audit && audit.findingCounts ? audit.findingCounts : { critical: 0, high: 0, medium: 0, low: 0, total: findings.length };
+  return {
+    ...audit,
+    target: audit && audit.url ? audit.url : targetUrl,
+    readOnly: true,
+    findings,
+    screens,
+    screensExplored: pages.length,
+    actionsPerformed: 0,
+    inconclusive: false,
+    runStatus: pages.length > 0 ? 'completed' : 'failed',
+    headline: findings.length === 0
+      ? `Read-only audit of ${pages.length} page(s): nothing broken was observed. Nothing was clicked.`
+      : `${findings.length} defect(s) observed on ${pages.length} page(s) without clicking anything (${counts.critical} critical, ${counts.high} high, ${counts.medium} medium, ${counts.low} low).`,
+    coverage: { screensExplored: pages.length, actionsPerformed: 0, screens },
+    complete: { actions: 0, screens: pages.length, readOnly: true, robotsBlocked: audit && audit.robotsBlocked ? audit.robotsBlocked : [] }
+  };
+}
+
+async function runTappAudit(targetUrl, onProgress = () => {}, signal) {
   const parsed = safeUrl(targetUrl);
   if (!parsed) {
     throw new Error('Please enter a valid website URL.');
@@ -455,10 +487,9 @@ async function runTappExplore(targetUrl, onProgress = () => {}, signal) {
   const normalized = parsed.toString();
   const jsonPath = path.join(os.tmpdir(), `clien-tapp-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   const args = [
-    '-y', TAPP_PACKAGE, 'explore', normalized,
-    '--platform', 'web',
-    '--actions', '120',
-    '--timeout', '300',
+    '-y', TAPP_PACKAGE, 'audit', normalized,
+    '--pages', String(TAPP_AUDIT_PAGES),
+    '--delay', String(TAPP_AUDIT_DELAY_MS),
     '--json', jsonPath
   ];
 
@@ -470,7 +501,8 @@ async function runTappExplore(targetUrl, onProgress = () => {}, signal) {
         abortError.name = 'AbortError';
         return reject(abortError);
       }
-      if (error && error.code !== 0) {
+      // audit exits 1 when it found defects — that is the result we want, not a failure.
+      if (error && error.code !== 0 && error.code !== 1) {
         return reject(new Error(stderr || stdout || error.message));
       }
       resolve();
@@ -506,7 +538,7 @@ async function runTappExplore(targetUrl, onProgress = () => {}, signal) {
     // Ignore cleanup failures
   }
 
-  return payload;
+  return normalizeAuditPayload(payload, normalized);
 }
 
 function getCaptureMedia(payload, findings) {
@@ -671,13 +703,22 @@ async function createEvidenceVideos(payload, slides) {
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const ACTIONABLE_FINDING_TYPES = new Set([
   'anchor_missing',
+  'broken_image',
   'broken_link',
+  'dangling_aria_controls',
   'dead_control',
+  'horizontal_overflow',
   'js_exception',
   'load_timeout',
+  'missing_asset',
+  'mixed_content',
+  'network_error',
+  'no_viewport_meta',
   'page_error',
+  'placeholder_link',
   'request_failed',
-  'unresponsive_element'
+  'unresponsive_element',
+  'unwired_control'
 ]);
 
 function isActionableFinding(finding) {
@@ -730,7 +771,16 @@ function sortFindingsByPriority(findings) {
 function describeExpectedBehavior(finding) {
   const expectations = {
     anchor_missing: 'The selected link should move the visitor to the intended section.',
+    broken_image: 'The image should load and display.',
     broken_link: 'The selected link should open a working destination.',
+    dangling_aria_controls: 'The control should open or toggle the panel it names.',
+    horizontal_overflow: 'The page should fit the screen width without sideways scrolling.',
+    missing_asset: 'Every stylesheet, script and image the page references should exist.',
+    mixed_content: 'Every resource on a secure page should also load securely.',
+    network_error: 'The page should load without failed or server-error requests.',
+    no_viewport_meta: 'The page should declare a viewport so phones render it at a readable size.',
+    placeholder_link: 'The link should lead somewhere.',
+    unwired_control: 'The button should do something when pressed.',
     dead_control: 'The selected control should visibly respond and complete its intended action.',
     js_exception: 'The page should run without a JavaScript exception.',
     load_timeout: 'The destination should finish loading within the audit timeout.',
@@ -922,7 +972,7 @@ function summarizeFindings(payload, context = {}) {
     [finding.type, finding.title, finding.url, finding.target].filter(Boolean).join('|'),
     finding
   ])).values()]);
-  const headline = payload && payload.headline ? payload.headline : 'Tapp exploration completed.';
+  const headline = payload && payload.headline ? payload.headline : 'Tapp read-only audit completed.';
   const comparison = {
     priorAuditCount: Number(context.priorAuditCount || 0),
     priorFindingFingerprints: Array.isArray(context.priorFindingFingerprints) ? context.priorFindingFingerprints : []
@@ -975,8 +1025,8 @@ function summarizeFindings(payload, context = {}) {
     '',
     `Target: ${target || 'website URL'}`,
     `Domain: ${domain}`,
-    `Screens explored: ${payload && payload.screensExplored ? payload.screensExplored : 0}`,
-    `Actions performed: ${payload && payload.actionsPerformed ? payload.actionsPerformed : 0}`,
+    `Pages audited: ${payload && payload.screensExplored ? payload.screensExplored : 0}`,
+    'Method: read-only audit — rendered and read, nothing clicked, typed or submitted',
     `Deterministic findings: ${bugsFound}`,
     '',
     'Findings (priority order):'
@@ -1099,7 +1149,7 @@ function createPdfReport(result, payload, filePath) {
 
 async function analyzeWebsite(inputUrl, baseUrl, onProgress = () => {}, signal) {
   onProgress({ phase: 'exploring' });
-  const payload = await runTappExplore(inputUrl, onProgress, signal);
+  const payload = await runTappAudit(inputUrl, onProgress, signal);
   onProgress({
     phase: 'verifying',
     screens: Number(payload && payload.screensExplored || 0),

@@ -92,8 +92,8 @@ function setAuditProgress({ phase = 'exploring', screens, actions } = {}) {
     step.classList.toggle('is-active', index === activeIndex);
   });
   const counts = [];
-  if (Number.isFinite(screens)) counts.push(`${screens} screens`);
-  if (Number.isFinite(actions)) counts.push(`${actions} actions`);
+  if (Number.isFinite(screens)) counts.push(`${screens} pages`);
+  if (Number.isFinite(actions) && actions > 0) counts.push(`${actions} actions`);
   progressCounts.textContent = counts.join(' · ');
 }
 
