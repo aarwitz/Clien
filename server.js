@@ -10,7 +10,7 @@ const PDFDocument = require('pdfkit');
 const app = express();
 const PORT = 3000;
 // CLIEN_TAPP_PACKAGE lets a developer point at an unreleased build (a packed tarball path works).
-const TAPP_PACKAGE = process.env.CLIEN_TAPP_PACKAGE || '@aarwitz/tapp@0.17.22';
+const TAPP_PACKAGE = process.env.CLIEN_TAPP_PACKAGE || '@aarwitz/tapp@0.17.25';
 // Read-only: `tapp audit` renders and reads prospect pages but never clicks, types, submits or
 // hovers, so it is safe to point at a site we do not own. `explore` clicks and must never be
 // run against a third party. Pages per site and the pause between them keep the crawl polite.
