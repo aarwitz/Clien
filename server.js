@@ -709,6 +709,9 @@ async function createEvidenceVideos(payload, slides) {
 }
 
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+// Grade-bearing finding types. The 2026-10-12 precision pass (tapp docs/AUDIT-PRECISION-2026-10-12.md)
+// verified every remaining finding of these types by hand; unwired_control and placeholder_link
+// stay advisory until the next pass, because every false-positive class found was in those two.
 const ACTIONABLE_FINDING_TYPES = new Set([
   'anchor_missing',
   'broken_image',
@@ -723,15 +726,15 @@ const ACTIONABLE_FINDING_TYPES = new Set([
   'network_error',
   'no_viewport_meta',
   'page_error',
-  'placeholder_link',
   'request_failed',
-  'unresponsive_element',
-  'unwired_control'
+  'unresponsive_element'
 ]);
 
 function isActionableFinding(finding) {
   const title = String(finding && finding.title || '');
   if (/^Outbound link (?:unreachable|returns HTTP)/i.test(title)) return false;
+  // A link the audit could not fetch is not a verified broken link; only an HTTP status is.
+  if (finding && finding.type === 'broken_link' && /could not be fetched/i.test(title)) return false;
   return ACTIONABLE_FINDING_TYPES.has(finding && finding.type);
 }
 
